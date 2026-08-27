@@ -97,10 +97,11 @@ class OSIABWebViewActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val uris = when {
                 result.resultCode != Activity.RESULT_OK -> null
-                result.data?.data != null -> WebChromeClient.FileChooserParams.parseResult(
-                    result.resultCode,
-                    result.data
-                ) // file was selected from gallery or file manager, some OEMs also return the video here (e.g. Google)
+                result.data?.data != null || result.data?.clipData != null ->
+                    WebChromeClient.FileChooserParams.parseResult(
+                        result.resultCode,
+                        result.data
+                    ) // file(s) selected from the document picker
 
                 // we need to check currentPhotoFile.length() > 0 to make sure a photo was actually taken
                 currentPhotoUri != null && currentPhotoFile != null && currentPhotoFile!!.length() > 0 ->
@@ -717,8 +718,9 @@ class OSIABWebViewActivity : AppCompatActivity() {
             permissionNotDeclaredOrGranted: Boolean,
             allowMultiple: Boolean
         ) {
-            val contentIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            val contentIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 
                 when {
                     acceptTypes.isEmpty() || acceptTypes.contains("*/*") -> {
@@ -735,8 +737,15 @@ class OSIABWebViewActivity : AppCompatActivity() {
 
                 putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
             }
+            Log.i(
+                LOG_TAG,
+                "mixedmime.2 action=${contentIntent.action} type=${contentIntent.type} " +
+                    "mimeTypes=${acceptTypes.joinToString()} allowMultiple=$allowMultiple"
+            )
+
             val chooser = Intent(Intent.ACTION_CHOOSER).apply {
                 putExtra(Intent.EXTRA_INTENT, contentIntent)
+                putExtra(Intent.EXTRA_TITLE, "Select file • mixedmime.2")
                 if (permissionNotDeclaredOrGranted && intentList.isNotEmpty()) {
                     putExtra(Intent.EXTRA_INITIAL_INTENTS, intentList.toTypedArray())
                 }
