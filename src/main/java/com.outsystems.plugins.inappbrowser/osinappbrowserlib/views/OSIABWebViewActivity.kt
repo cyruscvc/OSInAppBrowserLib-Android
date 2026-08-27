@@ -15,6 +15,7 @@ import android.graphics.Bitmap
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
+import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -554,8 +555,9 @@ class OSIABWebViewActivity : AppCompatActivity() {
     private inner class OSIABWebChromeClient : WebChromeClient() {
 
         // for handling uploads (photo, video, gallery, files)
-        private var acceptTypes: String = ""
+        private var acceptTypes: List<String> = emptyList()
         private var captureEnabled: Boolean = false
+        private var allowMultiple: Boolean = false
 
         // handle standard permissions (e.g. audio, camera)
         override fun onPermissionRequest(request: PermissionRequest?) {
@@ -581,8 +583,9 @@ class OSIABWebViewActivity : AppCompatActivity() {
             fileChooserParams: FileChooserParams
         ): Boolean {
             this@OSIABWebViewActivity.filePathCallback = filePathCallback
-            acceptTypes = fileChooserParams.acceptTypes.joinToString()
+            acceptTypes = normalizeAcceptTypes(fileChooserParams.acceptTypes)
             captureEnabled = fileChooserParams.isCaptureEnabled
+            allowMultiple = fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE
 
             // if camera permission is declared in manifest but is not granted, request it
             if (hasCameraPermissionDeclared() && !isCameraPermissionGranted()) {
@@ -596,7 +599,7 @@ class OSIABWebViewActivity : AppCompatActivity() {
             }
 
             try {
-                launchFileChooser(acceptTypes, captureEnabled)
+                launchFileChooser(acceptTypes, captureEnabled, allowMultiple)
                 return true
             } catch (npe: NullPointerException) {
                 Log.e(
@@ -616,22 +619,28 @@ class OSIABWebViewActivity : AppCompatActivity() {
         fun cancelFileChooser() {
             filePathCallback?.onReceiveValue(null)
             filePathCallback = null
-            acceptTypes = ""
+            acceptTypes = emptyList()
             captureEnabled = false
+            allowMultiple = false
         }
 
         fun retryFileChooser() {
             try {
-                launchFileChooser(acceptTypes, captureEnabled)
+                launchFileChooser(acceptTypes, captureEnabled, allowMultiple)
             } catch (e: Exception) {
                 e.printStackTrace()
                 cancelFileChooser()
             }
-            acceptTypes = ""
+            acceptTypes = emptyList()
             captureEnabled = false
+            allowMultiple = false
         }
 
-        private fun launchFileChooser(acceptTypes: String = "", isCaptureEnabled: Boolean = false) {
+        private fun launchFileChooser(
+            acceptTypes: List<String> = emptyList(),
+            isCaptureEnabled: Boolean = false,
+            allowMultiple: Boolean = false
+        ) {
             val intentList = buildPhotoVideoIntents(acceptTypes)
             val permissionNotDeclaredOrGranted = hasCameraPermissionDeclared().not() || isCameraPermissionGranted()
 
@@ -640,7 +649,12 @@ class OSIABWebViewActivity : AppCompatActivity() {
                 launchCameraChooser(intentList)
             } else if (!isCaptureEnabled) {
                 // if capture is not enabled, we show the full chooser
-                launchFullChooser(intentList, acceptTypes, permissionNotDeclaredOrGranted)
+                launchFullChooser(
+                    intentList,
+                    acceptTypes,
+                    permissionNotDeclaredOrGranted,
+                    allowMultiple
+                )
             } else {
                 // capture is enabled but permission declared and not granted,
                 // as our only option is to capture, we cannot proceed
@@ -649,12 +663,12 @@ class OSIABWebViewActivity : AppCompatActivity() {
             }
         }
 
-        private fun buildPhotoVideoIntents(acceptTypes: String): MutableList<Intent> {
+        private fun buildPhotoVideoIntents(acceptTypes: List<String>): MutableList<Intent> {
             val intentList = mutableListOf<Intent>()
             val permissionNotDeclaredOrGranted = hasCameraPermissionDeclared().not() || isCameraPermissionGranted()
 
             if (permissionNotDeclaredOrGranted) {
-                if (acceptTypes.contains("image") || acceptTypes.isEmpty()) {
+                if (acceptsMimeFamily(acceptTypes, "image")) {
                     currentPhotoFile = createTempFile(this@OSIABWebViewActivity, "IMG_", ".jpg").also { file ->
                         currentPhotoUri = FileProvider.getUriForFile(
                             this@OSIABWebViewActivity,
@@ -667,7 +681,7 @@ class OSIABWebViewActivity : AppCompatActivity() {
                     }
                     intentList.add(takePictureIntent)
                 }
-                if (acceptTypes.contains("video") || acceptTypes.isEmpty()) {
+                if (acceptsMimeFamily(acceptTypes, "video")) {
                     currentVideoFile = createTempFile(this@OSIABWebViewActivity, "VID_", ".mp4").also { file ->
                         currentVideoFile = file
                         currentVideoUri = FileProvider.getUriForFile(
@@ -697,14 +711,29 @@ class OSIABWebViewActivity : AppCompatActivity() {
             fileChooserLauncher.launch(chooser)
         }
 
-        private fun launchFullChooser(intentList: List<Intent>, acceptTypes: String, permissionNotDeclaredOrGranted: Boolean) {
+        private fun launchFullChooser(
+            intentList: List<Intent>,
+            acceptTypes: List<String>,
+            permissionNotDeclaredOrGranted: Boolean,
+            allowMultiple: Boolean
+        ) {
             val contentIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
-                type = when {
-                    acceptTypes.contains("video") -> "video/*"
-                    acceptTypes.contains("image") -> "image/*"
-                    else -> "*/*"
+
+                when {
+                    acceptTypes.isEmpty() || acceptTypes.contains("*/*") -> {
+                        type = "*/*"
+                    }
+                    acceptTypes.size == 1 -> {
+                        type = acceptTypes.first()
+                    }
+                    else -> {
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes.toTypedArray())
+                    }
                 }
+
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
             }
             val chooser = Intent(Intent.ACTION_CHOOSER).apply {
                 putExtra(Intent.EXTRA_INTENT, contentIntent)
@@ -713,6 +742,44 @@ class OSIABWebViewActivity : AppCompatActivity() {
                 }
             }
             fileChooserLauncher.launch(chooser)
+        }
+
+        private fun normalizeAcceptTypes(values: Array<String>): List<String> {
+            return values
+                .flatMap { it.split(",") }
+                .mapNotNull { normalizeAcceptType(it) }
+                .distinct()
+        }
+
+        private fun normalizeAcceptType(rawValue: String): String? {
+            val value = rawValue
+                .substringBefore(";")
+                .trim()
+                .lowercase(Locale.ROOT)
+
+            if (value.isEmpty()) return null
+            if (value == "*/*" || value.contains("/")) return value
+            if (!value.startsWith(".")) return null
+
+            val extension = value.removePrefix(".")
+            return when (extension) {
+                "pdf" -> "application/pdf"
+                "doc" -> "application/msword"
+                "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                "xls" -> "application/vnd.ms-excel"
+                "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                "jpg", "jpeg" -> "image/jpeg"
+                "png" -> "image/png"
+                "gif" -> "image/gif"
+                "webp" -> "image/webp"
+                else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+            }
+        }
+
+        private fun acceptsMimeFamily(acceptTypes: List<String>, family: String): Boolean {
+            return acceptTypes.isEmpty() || acceptTypes.any {
+                it == "*/*" || it.startsWith("$family/")
+            }
         }
 
         private fun isCameraPermissionGranted(): Boolean {
