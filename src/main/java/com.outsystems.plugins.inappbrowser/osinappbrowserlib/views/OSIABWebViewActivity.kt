@@ -27,6 +27,7 @@ import android.widget.Button
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -737,15 +738,41 @@ class OSIABWebViewActivity : AppCompatActivity() {
 
                 putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
             }
+            val mimeFamilies = acceptTypes
+                .filterNot { it == "*/*" }
+                .mapNotNull { mimeType ->
+                    mimeType.substringBefore("/").takeIf { mimeType.contains("/") }
+                }
+                .toSet()
+            val usesDirectDocumentPicker = mimeFamilies.size > 1
+
             Log.i(
                 LOG_TAG,
-                "mixedmime.2 action=${contentIntent.action} type=${contentIntent.type} " +
-                    "mimeTypes=${acceptTypes.joinToString()} allowMultiple=$allowMultiple"
+                "mixedmime.3 action=${contentIntent.action} type=${contentIntent.type} " +
+                    "mimeTypes=${acceptTypes.joinToString()} allowMultiple=$allowMultiple " +
+                    "directDocumentPicker=$usesDirectDocumentPicker"
             )
+
+            if (usesDirectDocumentPicker) {
+                // Android's chooser may route a mixed image/document request through an
+                // image-capable initial intent. Launching ACTION_OPEN_DOCUMENT directly
+                // preserves the disjoint MIME filter in EXTRA_MIME_TYPES.
+                currentPhotoFile = null
+                currentPhotoUri = null
+                currentVideoFile = null
+                currentVideoUri = null
+                Toast.makeText(
+                    this@OSIABWebViewActivity,
+                    "Mixed file picker • mixedmime.3",
+                    Toast.LENGTH_SHORT
+                ).show()
+                fileChooserLauncher.launch(contentIntent)
+                return
+            }
 
             val chooser = Intent(Intent.ACTION_CHOOSER).apply {
                 putExtra(Intent.EXTRA_INTENT, contentIntent)
-                putExtra(Intent.EXTRA_TITLE, "Select file • mixedmime.2")
+                putExtra(Intent.EXTRA_TITLE, "Select file • mixedmime.3")
                 if (permissionNotDeclaredOrGranted && intentList.isNotEmpty()) {
                     putExtra(Intent.EXTRA_INITIAL_INTENTS, intentList.toTypedArray())
                 }
