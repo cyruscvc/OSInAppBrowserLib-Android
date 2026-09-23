@@ -3,6 +3,7 @@ package com.outsystems.plugins.inappbrowser.osinappbrowserlib.views
 import android.Manifest
 import android.app.Application
 import android.app.Activity
+import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -12,6 +13,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import android.view.Gravity
@@ -19,6 +21,7 @@ import android.view.View
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
+import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -29,6 +32,7 @@ import android.widget.Button
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -354,11 +358,12 @@ open class OSIABWebViewActivity : AppCompatActivity() {
             )
         webView.webChromeClient = customWebChromeClient()
 
-        webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             handleWebViewDownload(
                 url = url,
                 mimeType = mimeType,
-                contentDisposition = contentDisposition
+                contentDisposition = contentDisposition,
+                userAgent = userAgent
             )
         }
     }
@@ -386,17 +391,18 @@ open class OSIABWebViewActivity : AppCompatActivity() {
     private fun handleWebViewDownload(
         url: String?,
         mimeType: String?,
-        contentDisposition: String?
+        contentDisposition: String?,
+        userAgent: String?
     ) {
-        if (OSIABPdfHelper.isPdf(mimeType, contentDisposition) &&
-            (!url.isNullOrEmpty() && !url.startsWith(PDF_VIEWER_URL_PREFIX))
-        ) {
+        if (url.isNullOrBlank() || url.startsWith(PDF_VIEWER_URL_PREFIX)) return
+
+        if (OSIABPdfHelper.isPdf(mimeType, contentDisposition)) {
             lifecycleScope.launch(Dispatchers.IO) {
                 val pdfFile = try {
                     OSIABPdfHelper.downloadPdfToCache(this@OSIABWebViewActivity, url)
                 } catch (_: IOException) {
-                    // can happen if we try to press the "save" button in pdf viewer
-                    //  which returns a blob url that we won't be able to download
+                    // The PDF viewer save button can return a blob URL that native HTTP
+                    // download APIs cannot resolve.
                     null
                 }
                 if (pdfFile != null) {
@@ -409,6 +415,73 @@ open class OSIABWebViewActivity : AppCompatActivity() {
                     }
                 }
             }
+            return
+        }
+
+        if (!url.startsWith("https://", ignoreCase = true) &&
+            !url.startsWith("http://", ignoreCase = true)
+        ) {
+            Log.w(LOG_TAG, "Unsupported WebView download URL scheme: ${Uri.parse(url).scheme}")
+            Toast.makeText(
+                this,
+                "This download format is not supported by the app.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        try {
+            val resolvedMimeType = mimeType
+                ?.substringBefore(";")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: "application/octet-stream"
+            val rawFileName = URLUtil.guessFileName(url, contentDisposition, resolvedMimeType)
+            val safeFileName = rawFileName
+                .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                .take(180)
+                .ifBlank { "download" }
+
+            val request = DownloadManager.Request(Uri.parse(url)).apply {
+                setTitle(safeFileName)
+                setDescription("Downloading ${safeFileName}")
+                setMimeType(resolvedMimeType)
+                setNotificationVisibility(
+                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                )
+                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeFileName)
+
+                val cookies = CookieManager.getInstance().getCookie(url)
+                if (!cookies.isNullOrBlank()) {
+                    addRequestHeader("Cookie", cookies)
+                }
+
+                val resolvedUserAgent = userAgent
+                    ?.takeIf { it.isNotBlank() }
+                    ?: webView.settings.userAgentString
+                if (!resolvedUserAgent.isNullOrBlank()) {
+                    addRequestHeader("User-Agent", resolvedUserAgent)
+                }
+            }
+
+            val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val downloadId = downloadManager.enqueue(request)
+            Log.i(
+                LOG_TAG,
+                "Queued WebView download id=$downloadId file=$safeFileName mime=$resolvedMimeType"
+            )
+            Toast.makeText(
+                this,
+                "Downloading ${safeFileName}",
+                Toast.LENGTH_SHORT
+            ).show()
+        } catch (exception: Exception) {
+            Log.e(LOG_TAG, "Failed to queue WebView download", exception)
+            Toast.makeText(
+                this,
+                "Unable to start the download.",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
