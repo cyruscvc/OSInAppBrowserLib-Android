@@ -48,10 +48,12 @@ import androidx.lifecycle.lifecycleScope
 import com.outsystems.plugins.inappbrowser.osinappbrowserlib.OSIABEvents
 import com.outsystems.plugins.inappbrowser.osinappbrowserlib.R
 import com.outsystems.plugins.inappbrowser.osinappbrowserlib.helpers.OSIABFileChooserHelper
+import com.outsystems.plugins.inappbrowser.osinappbrowserlib.helpers.OSIABDownloadBridge
 import com.outsystems.plugins.inappbrowser.osinappbrowserlib.helpers.OSIABPdfHelper
 import com.outsystems.plugins.inappbrowser.osinappbrowserlib.models.OSIABToolbarPosition
 import com.outsystems.plugins.inappbrowser.osinappbrowserlib.models.OSIABWebViewOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -61,6 +63,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 open class OSIABWebViewActivity : AppCompatActivity() {
+
+    private val downloadBridge = OSIABDownloadBridge(this)
 
     private lateinit var webView: WebView
     private lateinit var closeButton: TextView
@@ -256,6 +260,7 @@ open class OSIABWebViewActivity : AppCompatActivity() {
         enableThirdPartyCookies()
 
         setupWebView()
+        downloadBridge.attach(webView, urlToOpen)
 
         if (urlToOpen != null) {
             handleLoadUrl(urlToOpen, customHeaders)
@@ -285,6 +290,7 @@ open class OSIABWebViewActivity : AppCompatActivity() {
             }
             closeReceiver = null
         }
+        downloadBridge.dispose()
         webView.destroy()
         super.onDestroy()
     }
@@ -396,27 +402,8 @@ open class OSIABWebViewActivity : AppCompatActivity() {
     ) {
         if (url.isNullOrBlank() || url.startsWith(PDF_VIEWER_URL_PREFIX)) return
 
-        if (OSIABPdfHelper.isPdf(mimeType, contentDisposition)) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                val pdfFile = try {
-                    OSIABPdfHelper.downloadPdfToCache(this@OSIABWebViewActivity, url)
-                } catch (_: IOException) {
-                    // The PDF viewer save button can return a blob URL that native HTTP
-                    // download APIs cannot resolve.
-                    null
-                }
-                if (pdfFile != null) {
-                    withContext(Dispatchers.Main) {
-                        webView.stopLoading()
-                        originalUrl = url
-                        val pdfJsUrl =
-                            PDF_VIEWER_URL_PREFIX + Uri.encode("file://${pdfFile.absolutePath}")
-                        webView.loadUrl(pdfJsUrl)
-                    }
-                }
-            }
-            return
-        }
+        Log.i(LOG_TAG, "2.1.1-mapp.1 download scheme=${Uri.parse(url).scheme} mime=$mimeType")
+        if (downloadBridge.download(url, null, mimeType)) return
 
         if (!url.startsWith("https://", ignoreCase = true) &&
             !url.startsWith("http://", ignoreCase = true)
@@ -466,6 +453,7 @@ open class OSIABWebViewActivity : AppCompatActivity() {
 
             val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val downloadId = downloadManager.enqueue(request)
+            observeDownload(downloadManager, downloadId)
             Log.i(
                 LOG_TAG,
                 "Queued WebView download id=$downloadId file=$safeFileName mime=$resolvedMimeType"
@@ -482,6 +470,36 @@ open class OSIABWebViewActivity : AppCompatActivity() {
                 "Unable to start the download.",
                 Toast.LENGTH_LONG
             ).show()
+        }
+    }
+
+    private fun observeDownload(manager: DownloadManager, id: Long) {
+        lifecycleScope.launch {
+            // The OS continues the job after this WebView is closed; notifications remain available.
+            while (true) {
+                delay(1500)
+                val result = withContext(Dispatchers.IO) {
+                    try {
+                        manager.query(DownloadManager.Query().setFilterById(id)).use { cursor ->
+                            if (cursor == null || !cursor.moveToFirst()) null else Pair(
+                                cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)),
+                                cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                            )
+                        }
+                    } catch (_: Exception) { null }
+                } ?: break
+                if (result.first == DownloadManager.STATUS_SUCCESSFUL) {
+                    Toast.makeText(this@OSIABWebViewActivity, "File saved to Downloads.", Toast.LENGTH_LONG).show()
+                    break
+                }
+                if (result.first == DownloadManager.STATUS_FAILED) {
+                    Log.w(LOG_TAG, "Download failed id=$id reason=${result.second}")
+                    Toast.makeText(this@OSIABWebViewActivity,
+                        "Download failed (code ${result.second}). Check your connection and sign-in, then retry.",
+                        Toast.LENGTH_LONG).show()
+                    break
+                }
+            }
         }
     }
 
@@ -538,6 +556,7 @@ open class OSIABWebViewActivity : AppCompatActivity() {
     ) : WebViewClient() {
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+            downloadBridge.pageStarted()
             super.onPageStarted(view, url, favicon)
             hideLoadingScreen()
             if (!hasLoadError) {
@@ -548,6 +567,7 @@ open class OSIABWebViewActivity : AppCompatActivity() {
         var lastPageFinishedUrl: String? = null
 
         override fun onPageFinished(view: WebView?, url: String?) {
+            downloadBridge.pageFinished()
             if (url != null && url == lastPageFinishedUrl && url.startsWith(PDF_VIEWER_URL_PREFIX)) {
                 // If the url is the same as the last finished URL and it is a PDF viewer URL,
                 // we do not want to trigger the page finished event again.
@@ -594,6 +614,25 @@ open class OSIABWebViewActivity : AppCompatActivity() {
         ): Boolean {
             val urlString = request?.url.toString()
             return when {
+                urlString.startsWith("msteams:", ignoreCase = true) -> {
+                    if (request?.isForMainFrame == true) {
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, request.url).apply {
+                                addCategory(Intent.CATEGORY_BROWSABLE)
+                                setPackage("com.microsoft.teams")
+                            })
+                        } catch (_: Exception) {
+                            Toast.makeText(this@OSIABWebViewActivity,
+                                "Unable to open Microsoft Teams. Check that it is installed.",
+                                Toast.LENGTH_LONG).show()
+                        }
+                    }
+                    true // Never navigate the WebView to an external-app scheme.
+                }
+                request?.isForMainFrame == true &&
+                    (urlString.startsWith("blob:") || urlString.startsWith("data:")) -> {
+                    downloadBridge.download(urlString, null, null)
+                }
                 // handle tel: links opening the appropriate app
                 urlString.startsWith("tel:") -> {
                     launchIntent(Intent.ACTION_DIAL, urlString)
