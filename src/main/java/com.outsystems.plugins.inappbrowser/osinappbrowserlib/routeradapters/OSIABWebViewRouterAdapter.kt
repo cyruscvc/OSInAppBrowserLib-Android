@@ -1,5 +1,8 @@
 package com.outsystems.plugins.inappbrowser.osinappbrowserlib.routeradapters
 
+import android.app.Activity
+import android.content.ContextWrapper
+import android.view.WindowManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -38,6 +41,20 @@ class OSIABWebViewRouterAdapter(
         const val WEB_VIEW_URL_EXTRA = "WEB_VIEW_URL_EXTRA"
         const val WEB_VIEW_OPTIONS_EXTRA = "WEB_VIEW_OPTIONS_EXTRA"
         const val CUSTOM_HEADERS_EXTRA = "CUSTOM_HEADERS_EXTRA"
+        const val SECURE_WINDOW_EXTRA = "MAPP_SECURE_WINDOW_EXTRA"
+
+        internal fun hasSecureWindow(context: Context): Boolean {
+            var current = context
+            while (current is ContextWrapper) {
+                if (current is Activity) {
+                    return (current.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE) != 0
+                }
+                val base = current.baseContext
+                if (base === current) break
+                current = base
+            }
+            return false
+        }
     }
 
     private var isFinished = false
@@ -123,6 +140,7 @@ class OSIABWebViewRouterAdapter(
                         putExtra(OSIABEvents.EXTRA_BROWSER_ID, browserId)
                         putExtra(WEB_VIEW_URL_EXTRA, url)
                         putExtra(WEB_VIEW_OPTIONS_EXTRA, options)
+                        putExtra(SECURE_WINDOW_EXTRA, hasSecureWindow(context))
                         putExtra(CUSTOM_HEADERS_EXTRA, Bundle().apply {
                             customHeaders?.forEach { (key, value) ->
                                 putString(key, value)
@@ -139,3 +157,4 @@ class OSIABWebViewRouterAdapter(
         }
     }
 }
+
