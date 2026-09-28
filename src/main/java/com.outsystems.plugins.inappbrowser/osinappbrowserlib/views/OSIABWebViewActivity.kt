@@ -65,6 +65,7 @@ import java.util.Locale
 open class OSIABWebViewActivity : AppCompatActivity() {
 
     private val downloadBridge = OSIABDownloadBridge(this)
+    private val teamsMessageBridge = OSIABTeamsMessageBridge(this)
 
     private lateinit var webView: WebView
     private lateinit var closeButton: TextView
@@ -261,6 +262,7 @@ open class OSIABWebViewActivity : AppCompatActivity() {
 
         setupWebView()
         downloadBridge.attach(webView, urlToOpen)
+        teamsMessageBridge.attach(webView, options.teamsMessageOrigins)
 
         if (urlToOpen != null) {
             handleLoadUrl(urlToOpen, customHeaders)
@@ -290,6 +292,7 @@ open class OSIABWebViewActivity : AppCompatActivity() {
             }
             closeReceiver = null
         }
+        teamsMessageBridge.dispose()
         downloadBridge.dispose()
         webView.destroy()
         super.onDestroy()
@@ -568,6 +571,7 @@ open class OSIABWebViewActivity : AppCompatActivity() {
 
         override fun onPageFinished(view: WebView?, url: String?) {
             downloadBridge.pageFinished()
+            teamsMessageBridge.pageFinished()
             if (url != null && url == lastPageFinishedUrl && url.startsWith(PDF_VIEWER_URL_PREFIX)) {
                 // If the url is the same as the last finished URL and it is a PDF viewer URL,
                 // we do not want to trigger the page finished event again.
@@ -1213,3 +1217,4 @@ open class OSIABWebViewActivity : AppCompatActivity() {
     }
 
 }
+

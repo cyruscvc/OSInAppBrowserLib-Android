@@ -17,5 +17,7 @@ data class OSIABWebViewOptions(
     @SerializedName("hardwareBack") val hardwareBack: Boolean = true,
     @SerializedName("pauseMedia") val pauseMedia: Boolean = true,
     @SerializedName("customUserAgent") val customUserAgent: String? = null,
-    @SerializedName("isIsolated") val isIsolated: Boolean = true
+    @SerializedName("isIsolated") val isIsolated: Boolean = true,
+    @SerializedName("teamsMessageOrigins") val teamsMessageOrigins: List<String> = emptyList()
 ) : OSIABOptions, Serializable
+
