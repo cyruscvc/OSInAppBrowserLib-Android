@@ -15,7 +15,7 @@ import org.json.JSONObject
 import java.net.URI
 import java.util.Locale
 
-/** Only opens Teams chat. No general native-command dispatcher is exposed. */
+/** Opens a Teams audio call for the configured M-Travel origins. */
 internal class OSIABTeamsMessageBridge(private val activity: Activity) {
     private var webView: WebView? = null
     private var allowed = emptySet<String>()
@@ -57,7 +57,7 @@ internal class OSIABTeamsMessageBridge(private val activity: Activity) {
             if (now - lastLaunch < 1500) return@addWebMessageListener
             lastLaunch = now
             val uri = Uri.Builder().scheme("https").authority("teams.microsoft.com")
-                .path("/l/chat/0/0").appendQueryParameter("users", email).build()
+                .path("/l/call/0/0").appendQueryParameter("users", email).build()
             try {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, uri).setPackage("com.microsoft.teams"))
             } catch (_: Exception) {
